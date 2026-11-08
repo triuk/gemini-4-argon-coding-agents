@@ -1,5 +1,19 @@
 # Gemini 4 Argon in Codex CLI and T3 Code
 
+## First: sign up for Google Cloud
+
+Go to [Google Cloud Free](https://cloud.google.com/free) and click **Get started for free**
+to sign up before continuing with the setup below.
+
+**You must be a new Google Cloud customer to qualify for the $300 welcome credit.**
+This requirement applies to the free-trial offer; existing customers can use their
+eligible paid Google Cloud project for this setup. See the linked page for Google's
+current offer and eligibility terms.
+
+![Google Cloud signup page showing the $300 free credit offer for new customers](docs/images/google-cloud-free-signup.png)
+
+## How it works
+
 This fork keeps the setup verified on Linux on 8 November 2026:
 
 ```text
