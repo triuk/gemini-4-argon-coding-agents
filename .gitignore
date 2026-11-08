@@ -1,7 +1,12 @@
-# never commit keys or generated local config
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.log
+*.key
 vertex-api-key
 argon-master-key
-*.key
-*.log
-.env
-.DS_Store
+*.bak-*
+application_default_credentials.json
+vertex-project
+proxy-port

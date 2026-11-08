@@ -1,0 +1,17 @@
+#!/bin/sh
+# Provider overrides apply only to this launch; ~/.codex/config.toml stays intact.
+set -eu
+D=${ARGON_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/argon-codex}
+PORT=${ARGON_PORT:-}
+[ -n "$PORT" ] || { if [ -s "$D/proxy-port" ]; then PORT=$(cat "$D/proxy-port"); else PORT=4000; fi; }
+case "$PORT" in ''|*[!0-9]*) echo 'ARGON_PORT must be an integer from 1 to 65535.' >&2; exit 2 ;; esac
+[ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || { echo 'Invalid ARGON_PORT.' >&2; exit 2; }
+exec codex \
+  -m gemini-4-argon \
+  -c 'model_provider="argon"' \
+  -c 'model_reasoning_effort="low"' \
+  -c 'model_providers.argon.name="Argon (Vertex ADC)"' \
+  -c "model_providers.argon.base_url=\"http://127.0.0.1:$PORT/v1\"" \
+  -c 'model_providers.argon.wire_api="responses"' \
+  -c 'model_providers.argon.requires_openai_auth=false' \
+  "$@"

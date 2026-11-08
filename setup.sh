@@ -1,142 +1,115 @@
 #!/usr/bin/env bash
-# setup.sh — Gemini 4 Argon (Vertex AI) for Codex CLI, Codex desktop, Claude Code CLI and
-# (opt-in) the Claude desktop app, through a local LiteLLM proxy. Idempotent: run it again any time.
-#
-#   VERTEX_PROJECT=<gcp-project-id> VERTEX_API_KEY='AQ....' ./setup.sh
-#
-# Options:
-#   --claude-desktop  also write and apply the Claude desktop third-party configuration
-#                     (switches the whole app to the gateway on its next launch; see README 3.5)
-#   --files-only      write/patch files only (no install, no proxy start, no tests, no app relaunch)
-#   -h, --help        this text
-#
-# Everything it touches: ~/.config/litellm/*, ~/.codex/config.toml, ~/.claude/settings.json, ~/.zshrc
-# and, with --claude-desktop, ~/Library/Application Support/Claude-3p/configLibrary/.
-# Backups: <file>.bak-argon-<timestamp> next to each patched file.
+# Install the ADC-backed proxy and a separate codex-argon command.
 set -euo pipefail
 
-FILES_ONLY=0; CLAUDE_DESKTOP=0
-for a in "$@"; do
-  case "$a" in
-    --files-only) FILES_ONLY=1 ;;
-    --claude-desktop) CLAUDE_DESKTOP=1 ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown option: $a" >&2; exit 2 ;;
+FILES_ONLY=0
+T3=0
+T3_SETTINGS="${T3CODE_HOME:-$HOME/.t3}/userdata/settings.json"
+T3_INSTANCE=codex_argon_proxy
+CODEX_SHARED_HOME=
+PORT="${ARGON_PORT:-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --files-only) FILES_ONLY=1; shift ;;
+    --t3) T3=1; shift ;;
+    --t3-settings|--t3-instance|--codex-home|--port)
+      [ "$#" -ge 2 ] || { printf 'Missing value for %s\n' "$1" >&2; exit 2; }
+      case "$1" in
+        --t3-settings) T3_SETTINGS="$2" ;;
+        --t3-instance) T3_INSTANCE="$2" ;;
+        --codex-home) CODEX_SHARED_HOME="$2" ;;
+        --port) PORT="$2" ;;
+      esac
+      shift 2 ;;
+    -h|--help)
+      printf '%s\n' 'Usage: VERTEX_PROJECT=your-project-id ./setup.sh [options]' \
+        'Installs into ~/.config/argon-codex and ~/.local/bin; keeps Codex config intact.' \
+        '--t3                 Add/update a separate Argon instance in T3, including effort.' \
+        '--t3-settings PATH   T3 server settings file (default: ~/.t3/userdata/settings.json).' \
+        '--t3-instance ID     Instance ID (default: codex_argon_proxy).' \
+        '--codex-home PATH    Shared CODEX_HOME for T3 thread continuation.' \
+        '--port NUMBER        Proxy port; saved for both the proxy and Codex launcher.' \
+        '--files-only         Skip dependencies, proxy startup and live tests.'
+      exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CFG="$HOME/.config/litellm"
-STAMP="$(date +%Y%m%d-%H%M%S)"
-log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
-py()   { uv run --quiet --python 3.12 --no-project python "$@"; }
+CFG="${ARGON_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/argon-codex}"
+BIN="${ARGON_BIN_DIR:-$HOME/.local/bin}"
+STAMP="$(date +%Y%m%d-%H%M%S)-$$"
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-# ---------------------------------------------------------------- 0. inputs and tools
-command -v uv >/dev/null 2>&1 || {
-  if command -v brew >/dev/null 2>&1; then log "installing uv with Homebrew"; brew install uv; else
-    die "uv is required: brew install uv   (or see https://docs.astral.sh/uv/)"; fi
-}
-command -v codex  >/dev/null 2>&1 || warn "codex not found: brew install codex  (or npm install -g @openai/codex), then: codex login"
-command -v claude >/dev/null 2>&1 || warn "claude not found: curl -fsSL https://claude.ai/install.sh | bash"
-
-if [ -z "${VERTEX_PROJECT:-}" ] && [ -f "$CFG/argon.yaml" ]; then
-  VERTEX_PROJECT="$(sed -nE 's#.*/projects/([^/]+)/locations/global/.*#\1#p' "$CFG/argon.yaml" | head -1)"
-  [ -n "$VERTEX_PROJECT" ] && log "reusing project from existing argon.yaml: $VERTEX_PROJECT"
-fi
-if [ -z "${VERTEX_PROJECT:-}" ]; then
-  [ -t 0 ] || die "VERTEX_PROJECT is not set (your Google Cloud project ID)"
-  read -r -p "Google Cloud project ID: " VERTEX_PROJECT
-fi
-[ -n "$VERTEX_PROJECT" ] || die "empty project ID"
-
-if [ -z "${VERTEX_API_KEY:-}" ] && [ -s "$CFG/vertex-api-key" ]; then
-  log "reusing existing key file $CFG/vertex-api-key"
-elif [ -z "${VERTEX_API_KEY:-}" ]; then
-  [ -t 0 ] || die "VERTEX_API_KEY is not set (Vertex API key, usually starts with AQ.)"
-  read -r -s -p "Vertex API key (input hidden): " VERTEX_API_KEY; echo
-  [ -n "$VERTEX_API_KEY" ] || die "empty key"
+if [ -z "$PORT" ] && [ -s "$CFG/proxy-port" ]; then PORT="$(cat "$CFG/proxy-port")"; fi
+PORT="${PORT:-4000}"
+[[ "$PORT" =~ ^[1-9][0-9]{0,4}$ ]] && [ "$PORT" -le 65535 ] || die 'Invalid proxy port (1–65535).'
+PYTHON=
+if [ "$T3" = 1 ]; then
+  # Files-only mode has no venv; use a host Python solely for the JSON merge.
+  PYTHON="$(command -v python3 || true)"
+  [ -n "$PYTHON" ] || [ "$FILES_ONLY" = 0 ] || die '--t3 --files-only needs python3.'
+  if [ -n "$PYTHON" ]; then
+    "$PYTHON" "$REPO_DIR/scripts/configure_t3.py" --settings "$T3_SETTINGS" \
+      --instance "$T3_INSTANCE" --launcher "$BIN/codex-argon" --check
+  fi
 fi
 
-# ---------------------------------------------------------------- 1. proxy install
+VERTEX_PROJECT="${VERTEX_PROJECT:-}"
+if [ -z "$VERTEX_PROJECT" ] && [ -s "$CFG/vertex-project" ]; then
+  VERTEX_PROJECT="$(cat "$CFG/vertex-project")"
+fi
+[[ "$VERTEX_PROJECT" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] \
+  || die 'Set VERTEX_PROJECT to a Google Cloud project ID (6–30 lowercase letters, digits or hyphens).'
+
 if [ "$FILES_ONLY" = 0 ]; then
-  log "installing LiteLLM proxy (litellm[proxy] + google-genai, Python 3.12)"
-  uv tool install 'litellm[proxy]' --with google-genai --python 3.12 --force >/dev/null
-  "$HOME/.local/share/uv/tools/litellm/bin/python" -c "import backoff, google.genai" 2>/dev/null \
-    || die "LiteLLM install looks incomplete (backoff / google.genai missing)"
+  command -v uv >/dev/null 2>&1 || die 'Install uv first: https://docs.astral.sh/uv/getting-started/installation/'
+fi
+mkdir -p "$CFG" "$BIN"
+chmod 700 "$CFG"
+
+if [ "$FILES_ONLY" = 0 ]; then
+  if [ ! -x "$CFG/.venv/bin/python" ]; then
+    uv venv --python 3.12 "$CFG/.venv"
+  fi
+  uv pip install --python "$CFG/.venv/bin/python" -r "$REPO_DIR/requirements.txt"
+  PYTHON="$CFG/.venv/bin/python"
 fi
 
-# ---------------------------------------------------------------- 2. proxy files
-log "writing proxy files to $CFG"
-mkdir -p "$CFG"; chmod 700 "$CFG"
-if [ -n "${VERTEX_API_KEY:-}" ]; then
-  ( umask 077; printf '%s\n' "$VERTEX_API_KEY" > "$CFG/vertex-api-key" )
-fi
-chmod 600 "$CFG/vertex-api-key"
-sed "s#__PROJECT__#$VERTEX_PROJECT#g" "$REPO_DIR/proxy/argon.yaml.template" > "$CFG/argon.yaml"
-cp "$REPO_DIR/proxy/start-argon.sh" "$CFG/start-argon.sh"; chmod +x "$CFG/start-argon.sh"
-cp "$REPO_DIR/proxy/argon_hooks.py" "$CFG/argon_hooks.py"   # cache_control strip + count_tokens fix
+copy_file() {
+  local source="$1" target="$2"
+  if [ -f "$target" ]; then
+    cmp -s "$source" "$target" && return 0
+    cp -p "$target" "$target.bak-$STAMP"
+    printf 'Backup: %s\n' "$target.bak-$STAMP"
+  fi
+  cp "$source" "$target"
+}
+copy_file "$REPO_DIR/proxy/argon.yaml" "$CFG/argon.yaml"
+copy_file "$REPO_DIR/proxy/argon_hooks.py" "$CFG/argon_hooks.py"
+copy_file "$REPO_DIR/proxy/start-argon.sh" "$CFG/start-argon.sh"
+copy_file "$REPO_DIR/codex/codex-argon" "$BIN/codex-argon"
+write_value() {
+  local target="$1" value="$2"
+  if [ -f "$target" ]; then
+    [ "$(cat "$target")" = "$value" ] && return 0
+    cp -p "$target" "$target.bak-$STAMP"
+    printf 'Backup: %s\n' "$target.bak-$STAMP"
+  fi
+  printf '%s\n' "$value" > "$target"
+}
+write_value "$CFG/vertex-project" "$VERTEX_PROJECT"
+write_value "$CFG/proxy-port" "$PORT"
+chmod +x "$CFG/start-argon.sh" "$BIN/codex-argon"
 
-# ---------------------------------------------------------------- 3. Codex config
-CODEX_CFG="$HOME/.codex/config.toml"
-mkdir -p "$HOME/.codex"; touch "$CODEX_CFG"
-CODEX_BEFORE="$(shasum "$CODEX_CFG" | cut -c1-40)"
-log "patching $CODEX_CFG"
-py "$REPO_DIR/scripts/patch_codex_config.py" "$CODEX_CFG" "$STAMP"
-CODEX_AFTER="$(shasum "$CODEX_CFG" | cut -c1-40)"
-
-# ---------------------------------------------------------------- 4. Claude Code
-CLAUDE_CFG="$HOME/.claude/settings.json"
-mkdir -p "$HOME/.claude"
-log "patching $CLAUDE_CFG"
-py "$REPO_DIR/scripts/patch_claude_settings.py" "$CLAUDE_CFG" "$STAMP" "$REPO_DIR/claude/settings-snippet.json"
-
-ZSHRC="$HOME/.zshrc"; touch "$ZSHRC"
-if grep -q '^claude-argon()' "$ZSHRC"; then
-  log "claude-argon already in $ZSHRC"
-else
-  log "adding claude-argon function to $ZSHRC"
-  { printf '\n'; cat "$REPO_DIR/claude/claude-argon.zsh"; } >> "$ZSHRC"
-fi
-
-# ---------------------------------------------------------------- 4b. Claude desktop app (opt-in)
-if [ "$CLAUDE_DESKTOP" = 1 ]; then
-  log "writing and applying the Claude desktop third-party configuration"
-  py "$REPO_DIR/scripts/patch_claude_desktop.py" "$REPO_DIR/claude/claude-desktop-entry.json" --apply
-  warn "Claude desktop will be on the gateway (Argon) for every chat after its next launch: quit it completely and reopen."
+if [ "$T3" = 1 ]; then
+  T3_ARGS=(--settings "$T3_SETTINGS" --instance "$T3_INSTANCE" --launcher "$BIN/codex-argon")
+  [ -z "$CODEX_SHARED_HOME" ] || T3_ARGS+=(--codex-home "$CODEX_SHARED_HOME")
+  "$PYTHON" "$REPO_DIR/scripts/configure_t3.py" "${T3_ARGS[@]}"
 fi
 
-if [ "$FILES_ONLY" = 1 ]; then log "files written (--files-only). Done."; exit 0; fi
-
-# ---------------------------------------------------------------- 5. start proxy + test
-if curl -s -m 2 http://127.0.0.1:4000/health/liveliness >/dev/null 2>&1; then
-  log "restarting proxy on 127.0.0.1:4000"; pkill -f 'argon.yaml' || true; sleep 1
-else
-  log "starting proxy on 127.0.0.1:4000"
+printf '\nInstalled. Start the proxy in a terminal:\n  %s\nThen run in another terminal:\n  %s\n' \
+  "$CFG/start-argon.sh" "$BIN/codex-argon"
+if [ "$FILES_ONLY" = 1 ]; then
+  printf 'Dependencies skipped (--files-only). Run setup without this flag before starting.\n'
 fi
-( nohup "$CFG/start-argon.sh" > "$CFG/argon.log" 2>&1 & )
-for i in $(seq 1 90); do
-  curl -s -m 2 http://127.0.0.1:4000/health/liveliness >/dev/null 2>&1 && break; sleep 1
-  [ "$i" = 90 ] && { tail -20 "$CFG/argon.log"; die "proxy did not come up; see $CFG/argon.log"; }
-done
-log "proxy is up; running end-to-end checks (a few small Argon calls)"
-py "$REPO_DIR/tests/test_proxy.py" || die "proxy checks failed; see $CFG/argon.log"
-
-# ---------------------------------------------------------------- 6. desktop app reload
-if [ "$CODEX_BEFORE" != "$CODEX_AFTER" ] && pgrep -xq ChatGPT 2>/dev/null; then
-  log "Codex config changed: relaunching the ChatGPT app so Codex desktop reloads it"
-  osascript -e 'tell application "ChatGPT" to quit' >/dev/null 2>&1 || true
-  for i in $(seq 1 15); do pgrep -xq ChatGPT || break; sleep 1; done
-  pgrep -xq ChatGPT && pkill -x ChatGPT || true; sleep 1; open -a ChatGPT || true
-fi
-
-cat <<EOF
-
-Done. Try it:
-  codex exec --skip-git-repo-check "List the files in this directory and count them."
-  source ~/.zshrc && claude-argon -p "List the files in this directory and count them."
-  Codex desktop: Codex tab -> model shows "Custom" -> new chat -> send anything.
-  Claude desktop (only with --claude-desktop): Cmd-Q Claude, reopen, the model picker shows "Gemini 4 Argon".
-Proxy log: $CFG/argon.log      Stop proxy: pkill -f argon.yaml      Start again: $CFG/start-argon.sh &
-EOF

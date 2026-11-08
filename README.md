@@ -1,481 +1,186 @@
-# Gemini 4 Argon inside Codex and Claude Code (via Vertex AI)
+# Gemini 4 Argon in Codex CLI and T3 Code
 
-Run Google's **Gemini 4 Argon** (`gemini-4-argon`) as the model behind **Codex CLI**, the
-**Codex desktop app** and **Claude Code CLI**, billed to your own Google Cloud project on
-Vertex AI (so Google Cloud credits apply). One small local proxy does the translation.
+This fork keeps the setup verified on Linux on 8 November 2026:
 
-```
-Codex CLI / Codex desktop  ──OpenAI Responses API──▶ ┌──────────────────────┐
-                                                     │ LiteLLM proxy        │ ──Gemini API──▶ Vertex AI (global)
-Claude Code CLI            ──Anthropic Messages API─▶ │ 127.0.0.1:4000       │                 gemini-4-argon
-                                                     └──────────────────────┘
+```text
+codex-argon → LiteLLM (127.0.0.1:4000, Responses API) → Vertex AI (global)
 ```
 
-Everything here was built and verified on a Mac on 17 Oct 2026 with the versions listed at the
-bottom. Follow the steps in order and it works first time. Every error we hit on the way is in
-the [troubleshooting table](#troubleshooting), with the fix that is already baked into the files.
+Authentication uses your Google account through Application Default Credentials (ADC).
+The proxy uses `vertex_ai/gemini-4-argon`. Installation adds a separate `codex-argon`
+command and keeps your normal Codex configuration intact.
 
-> **Do not switch every tool at once.** Keep at least one agent on its normal provider until the
-> others are verified, so you always have a working assistant to debug with. Go in this order:
-> proxy, Codex CLI, Claude Code CLI, Codex desktop, Claude desktop, and test after each. If an AI
-> agent is doing this for you, `AGENTS.md` / `CLAUDE.md` in this repo tell it the same thing and
-> make it ask which tool to leave untouched. Both desktop apps are whole-app switches.
+## Set it up with one prompt
 
-> **Why a proxy at all?** Codex only speaks the OpenAI *Responses* API with a bearer token.
-> Claude Code only speaks the Anthropic *Messages* API. Vertex AI offers neither for Gemini, and
-> its OpenAI-compatible endpoint is Chat Completions only, which Codex dropped in early 2026.
-> LiteLLM exposes both front-ends and talks native Gemini on the back.
+Give an agent with terminal access to the target Linux computer this prompt:
 
----
+> Nastav mi podle tohoto repa Argon: https://github.com/triuk/gemini-4-argon-coding-agents
+> Používám T3 Code. Přečti AGENTS.md a proveď celý postup v docs/agent-setup.md
+> včetně spuštění proxy a ověření. OpenAI chci dál používat vedle Argonu.
 
-## 0. What you need before starting
+The shorter request “Nastav mi podle tohoto repa Argon: [link]” is enough when the agent
+can discover the existing T3 installation and Google project. The [agent setup procedure](docs/agent-setup.md)
+covers discovery, dependencies, ADC, installation, T3 models, startup and actual API checks.
+The agent may still need your project choice, browser sign-in, or owner-only billing/IAM
+action. It reports such blockers explicitly; cloning the repo alone does not grant access.
 
-| Item | Notes |
-|---|---|
-| macOS on Apple Silicon or Intel | Tested on macOS 26.2, arm64. Linux works for the CLI parts; the desktop-app steps are macOS. |
-| [Homebrew](https://brew.sh) | `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"` |
-| [uv](https://docs.astral.sh/uv/) | `brew install uv` (installs the proxy and its own Python, nothing else touches your system Python) |
-| Codex CLI | `brew install codex` or `npm install -g @openai/codex`, then run `codex login` once (ChatGPT sign-in; see [why](#why-does-codex-still-need-a-chatgpt-login)) |
-| Codex desktop app | On macOS the Codex app now lives inside the **ChatGPT** desktop app (Codex tab). Install ChatGPT from openai.com and sign in. If you have the standalone Codex.app, it reads the same config file. |
-| Claude Code CLI | `curl -fsSL https://claude.ai/install.sh \| bash`, then run `claude` once to sign in |
-| A Google Cloud project with **billing enabled** | A Free Trial billing account is fine. Trial credit covers first-party Gemini on Vertex, but **not** the Gemini Developer API / AI Studio, so do not use an AI Studio key. |
-| **Vertex AI API enabled** on that project | Console → APIs & Services → Enable APIs → "Vertex AI API" (`aiplatform.googleapis.com`) |
-| A **Vertex API key** for that project | See step 1. The key we used starts with `AQ.` |
-| Your **project ID** | Console → project picker. The project *number* works too. |
+This repo's installation supports Linux. T3 Code integration and the three effort choices
+were verified on 9 November 2026. macOS and native Windows setup are not included.
 
-Keep two values handy for the next steps: `VERTEX_PROJECT` (project ID) and `VERTEX_API_KEY`.
+## Set up another computer
 
----
+You need Linux, [uv](https://docs.astral.sh/uv/getting-started/installation/),
+[Google Cloud CLI](https://cloud.google.com/sdk/docs/install), and Codex CLI on `PATH`.
+Your Google Cloud project must have billing, Vertex AI enabled, and access to this model.
+Your Google account needs permission to use Vertex AI and the project's quota.
 
-## 1. Create the Vertex API key (2 minutes)
-
-1. Open the Google Cloud console and select the project that has billing.
-2. Open **Gemini Enterprise Agent Platform** (the product formerly named Vertex AI; some pages call it
-   "Gemini platform") and look for **API keys**. Create a key. It starts with `AQ.`.
-   If your console shows the classic page instead: **APIs & Services → Credentials → Create
-   credentials → API key**, then restrict it to the Vertex AI API.
-3. Verify the key and the model before touching any tool. Replace the two placeholders:
+Clone this fork:
 
 ```bash
-curl -s -H "x-goog-api-key: YOUR_KEY" -H "Content-Type: application/json" \
-  "https://aiplatform.googleapis.com/v1/projects/YOUR_PROJECT/locations/global/publishers/google/models/gemini-4-argon:generateContent" \
-  -d '{"contents":[{"role":"user","parts":[{"text":"Reply with the single word OK."}]}],"generationConfig":{"maxOutputTokens":64,"thinkingConfig":{"thinkingLevel":"LOW"}}}'
-```
-
-You must see `"modelVersion": "gemini-4-argon"` and the text `OK`. If you get a 404 mentioning
-`us-central1`, you used the location-less URL; Argon only exists on `global`, `us` and `eu`.
-If you get 403, the Vertex AI API is not enabled or billing is off.
-
----
-
-## 2. One-command setup
-
-```bash
-git clone https://github.com/Itsme23476/gemini-4-argon-coding-agents.git
+git clone https://github.com/triuk/gemini-4-argon-coding-agents.git
 cd gemini-4-argon-coding-agents
-VERTEX_PROJECT=your-project-id VERTEX_API_KEY='AQ.your-key' ./setup.sh
 ```
 
-`setup.sh` is idempotent and does exactly this (each step is also written out below if you
-prefer to do it by hand):
-
-1. installs the proxy: `uv tool install 'litellm[proxy]' --with google-genai --python 3.12`
-2. writes `~/.config/litellm/argon.yaml`, `start-argon.sh` and the key file (mode 600)
-3. patches `~/.codex/config.toml` (backup kept next to it)
-4. patches `~/.claude/settings.json` (backup kept) and appends `claude-argon` to `~/.zshrc`
-5. starts the proxy and runs `tests/test_proxy.py` against it
-6. relaunches the ChatGPT app if it is running, so Codex desktop reloads the config
-
-Add `--claude-desktop` to also write and apply the Claude desktop configuration (step 3.5). Do
-that as a separate, later run: it moves the whole Claude app to Argon on its next launch.
-
-Then test the three tools:
+Sign in on the new computer, replacing `your-project-id` below:
 
 ```bash
-codex exec --skip-git-repo-check "List the files in this directory and count them."
+gcloud auth login
+gcloud services enable aiplatform.googleapis.com --project=your-project-id
+gcloud auth application-default login --project=your-project-id
+gcloud auth application-default set-quota-project your-project-id
 ```
+
+`gcloud auth login` authorizes the CLI; the **application-default** login authorizes the
+proxy. Follow the browser sign-in when prompted. Existing ADC users can skip the logins.
+See [Google's ADC documentation](https://docs.cloud.google.com/sdk/gcloud/reference/auth/application-default/login).
+
+Install the proxy and launcher:
 
 ```bash
-source ~/.zshrc && claude-argon -p "List the files in this directory and count them."
+VERTEX_PROJECT=your-project-id ./setup.sh
 ```
 
-Codex desktop: open the Codex tab, the model picker shows a single entry named **Custom**, start a
-new chat and send anything. Watch the request land in `~/.config/litellm/argon.log`.
+The installer creates an isolated Python 3.12 environment with the verified LiteLLM and
+Google Gen AI versions from `requirements.txt`. It writes proxy files under
+`~/.config/argon-codex/` and the launcher at `~/.local/bin/codex-argon`.
+Add `~/.local/bin` to `PATH` if needed, or use the full launcher path below.
+Re-running setup reuses the environment and saves changed files as `<file>.bak-<timestamp>-<pid>`.
 
-### Windows
+## Start and check
 
-Same architecture, same three config changes, different install commands and paths. Use
-`setup.ps1` instead of `setup.sh` and read **[docs/windows.md](docs/windows.md)** for the
-differences (PowerShell profile function, `curl.exe`, UTF-8 without BOM, autostart via Task
-Scheduler, WSL notes).
-
-```powershell
-$env:VERTEX_PROJECT = "your-project-id"; $env:VERTEX_API_KEY = "AQ.your-key"; .\setup.ps1
-```
-
-The Windows files mirror the verified macOS setup line for line and share the same patch scripts,
-but we have not run the Windows desktop app ourselves.
-
----
-
-## 3. Manual steps (what setup.sh does)
-
-### 3.1 Install the proxy
+Run the proxy in one terminal:
 
 ```bash
-uv tool install 'litellm[proxy]' --with google-genai --python 3.12
+~/.config/argon-codex/start-argon.sh
 ```
 
-Three details matter and each one cost us a round of debugging:
-
-- `[proxy]` extra: without it the server dies with `Missing dependency No module named 'backoff'`.
-- `--with google-genai`: LiteLLM's Gemini token counter imports `google.genai`; without it
-  `/v1/messages/count_tokens` returns 500.
-- `--python 3.12`: pin it, a later `uv tool upgrade` otherwise silently moves to a newer Python.
-
-### 3.2 Proxy config
-
-Copy `proxy/argon.yaml.template` to `~/.config/litellm/argon.yaml` and replace `__PROJECT__`
-with your project ID, and copy `proxy/argon_hooks.py` next to it. The config is one backend
-exposed under several names:
-
-```yaml
-model_list:
-  - model_name: gemini-4-argon          # the honest name (Codex, claude-argon)
-    litellm_params:
-      model: gemini/gemini-4-argon
-      api_base: https://aiplatform.googleapis.com/v1/projects/__PROJECT__/locations/global/publishers/google
-      api_key: os.environ/VERTEX_API_KEY
-  - model_name: claude-opus-4-8         # Claude-shaped aliases, same backend (see 3.5)
-    litellm_params: { ...identical... }
-  # also claude-sonnet-4-6, claude-sonnet-4-5, claude-haiku-4-5, claude-fable-5-1
-
-litellm_settings:
-  callbacks: argon_hooks.proxy_handler_instance
-  drop_params: true
-  modify_params: true
-
-router_settings:
-  disable_cooldowns: true
-
-general_settings:
-  dangerously_permit_weak_or_unset_master_key: true
-```
-
-Why it looks like this:
-
-- **`gemini/` provider, not `vertex_ai/`**: LiteLLM's Vertex provider only authenticates with
-  OAuth (service account or gcloud ADC). The `gemini/` provider is the one path that sends an
-  `x-goog-api-key` header. With `api_base` set, it builds
-  `{api_base}/models/gemini-4-argon:generateContent`, which is exactly the project-scoped
-  **global** Vertex URL. Billing lands on your project.
-- **Claude-shaped aliases**: the Claude desktop app deletes any model ID in its list that does
-  not look like an Anthropic one, and Claude Code asks for these names by default. Every alias
-  is Argon. The template writes each entry out in full on purpose, so LiteLLM never shares one
-  params object between deployments.
-- **`argon_hooks.py`** (loaded through `callbacks`; the start script puts the folder on
-  `PYTHONPATH`): strips Anthropic `cache_control` markers, which LiteLLM would otherwise turn into
-  a Gemini explicit-cache call that Argon does not support (404), and fixes LiteLLM's Gemini
-  `count_tokens` for the Vertex path, which otherwise 404s or returns zero.
-- **`drop_params`**: Argon ignores `temperature`, `top_p`, `top_k` and rejects
-  `thinkingBudget` (only `thinkingLevel` LOW/MEDIUM/HIGH exist). LiteLLM already maps
-  reasoning effort to thinking levels for gemini-3-and-newer names.
-- **`disable_cooldowns`**: with a single upstream, one transient error otherwise puts the model
-  in cooldown and every request for the next minute gets a 429.
-- **No master key**: Codex desktop sends its ChatGPT token as the bearer (see 3.3) and Claude
-  desktop sends a dummy key, so the proxy must accept any token. It binds to `127.0.0.1` only,
-  nothing outside your machine can reach it. LiteLLM refuses to start without a master key
-  unless that `dangerously_permit...` flag is set.
-
-Start script `~/.config/litellm/start-argon.sh` (from `proxy/start-argon.sh`):
-
-```sh
-#!/bin/sh
-set -e
-D="$HOME/.config/litellm"
-export VERTEX_API_KEY="$(cat "$D/vertex-api-key")"
-export LITELLM_TELEMETRY=False
-exec "$HOME/.local/bin/litellm" --config "$D/argon.yaml" --host 127.0.0.1 --port 4000 "$@"
-```
-
-Put the key in `~/.config/litellm/vertex-api-key` with `chmod 600`. Start and check:
+Run Codex in another:
 
 ```bash
-nohup ~/.config/litellm/start-argon.sh > ~/.config/litellm/argon.log 2>&1 &
+~/.local/bin/codex-argon
 ```
+
+Or run one short check:
 
 ```bash
-curl -s http://127.0.0.1:4000/health/liveliness
+~/.local/bin/codex-argon exec --ephemeral --skip-git-repo-check 'Reply OK without tools.'
 ```
 
-Run the end-to-end check (both APIs, tool-call round trips, streaming):
+The launch overrides select Argon, the local Responses endpoint and low reasoning effort.
+They use the same `-c` provider settings as [Codex custom providers](https://learn.chatgpt.com/docs/config-file/config-advanced).
+The normal `codex` command keeps using your existing settings. Stop the proxy with Ctrl+C;
+start it again after reboot. To keep a log, redirect its output in that terminal:
 
 ```bash
-uv run --python 3.12 --no-project tests/test_proxy.py
+~/.config/argon-codex/start-argon.sh > ~/.config/argon-codex/argon.log 2>&1
 ```
 
-The proxy does not survive a reboot. Run the start command again, or add a launchd agent.
+## T3 Code and reasoning effort
 
-### 3.3 Codex CLI and Codex desktop
+Use this command instead of the CLI-only install:
 
-Both read `~/.codex/config.toml`. Add these **at the very top** of the file (TOML requires
-top-level keys before any `[table]`), and the provider block anywhere below:
-
-```toml
-model = "gemini-4-argon"
-model_provider = "litellm"
-
-[model_providers.litellm]
-name = "LiteLLM (Gemini 4 Argon on Vertex)"
-base_url = "http://127.0.0.1:4000/v1"
-wire_api = "responses"
-supports_websockets = false
-requires_openai_auth = true
+```bash
+VERTEX_PROJECT=your-project-id ./setup.sh --t3
 ```
 
-Rules that are not obvious:
+It creates or updates a separate **Argon proxy** Codex instance and registers
+**Gemini 4 Argon** with **Low / Medium / High** effort. The original OpenAI instance,
+login and default model stay as they were. Changes to T3 settings are backed up, and
+re-running the command keeps a single Argon entry.
 
-- **Top level, not a profile.** The desktop app ignores `--profile` and only reads the top-level
-  `model` / `model_provider`.
-- **`wire_api = "responses"` is the only value that works.** Chat Completions support was
-  removed from Codex in early 2026.
-- **`requires_openai_auth = true` is what makes the desktop app work.** Without it the ChatGPT
-  app treats the thread as signed out and refuses to start it with
-  `Work browser access requires an authenticated account`. With it, Codex sends your ChatGPT
-  login token as the bearer to the proxy, which ignores it. Consequence: **do not add a
-  `[model_providers.litellm.auth]` block or an `env_key`**. Codex refuses to load a config that
-  has both (`provider auth cannot be combined with requires_openai_auth`), and a broken config
-  shows up in the desktop app as a vague "couldn't be loaded" message.
-- **Fully quit and relaunch the ChatGPT app** after every change to the file. The model picker
-  then shows one entry named **Custom** and the configured model string is sent as-is.
-- `model_reasoning_effort` (if you set it) maps to Argon's thinking level: `low`, `medium`, `high`.
+After starting the proxy, refresh provider status in T3 and select **Argon proxy →
+Gemini 4 Argon** from the thread's model picker. Use **Restart agent session** in the
+command palette if an existing conversation retains old metadata. Select the desired
+effort beside the model. The launcher's `low` is the fallback; T3's per-turn choice takes
+precedence. LiteLLM maps these choices to Gemini's `thinkingLevel`.
 
-Known limitations in Codex with any custom provider (open upstream issues): MCP servers from
-`config.toml` may not be exposed to the model, and switching models means editing the file.
+The default settings file is `~/.t3/userdata/settings.json` (or under `T3CODE_HOME`).
+Use `--t3-settings /path/to/userdata/settings.json` for a different server location,
+`--t3-instance my_argon` for a different instance ID, or `--codex-home /path/to/.codex`
+to match an existing OpenAI instance's shared home. Compatible Codex instances sharing
+that home can continue the same T3 thread. Run setup on the computer hosting the agent.
 
-### 3.4 Claude Code CLI
+For manual configuration, add **Codex → Configure manually** in **Settings → Providers**,
+set **Binary path** to the absolute installed `codex-argon` path, and use the same
+**CODEX_HOME path** as OpenAI. Merge [`codex/t3-model.json`](codex/t3-model.json) as one
+entry in `providerInstances.<argon-instance>.config.customModels`. Explicit model
+capabilities are necessary: an unregistered model can work while hiding the effort control.
+See [T3's Codex guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/providers-codex.md)
+and [custom model documentation](https://github.com/pingdotgg/t3code/blob/main/docs/user/composer.md#custom-models).
 
-Two pieces. First, Claude Code refuses model IDs it does not know unless you map them. Add to
-`~/.claude/settings.json` (merge with what is there):
+## Why the schema hook is needed
 
-```json
-{
-  "modelPicker": {
-    "options": [
-      {
-        "model": "gemini-4-argon",
-        "label": "Gemini 4 Argon (Vertex via LiteLLM)",
-        "behavesAs": "claude-opus-4-8"
-      }
-    ]
-  }
-}
+Codex sends tool declarations even when the prompt requests no tool calls. Gemini rejects
+some of their JSON Schema constructs. `proxy/argon_hooks.py` adapts declarations only:
+
+- converts `oneOf` to `anyOf`;
+- merges root object unions into an object, keeping fields required in every branch;
+- replaces enums containing an empty string and empty-string `const` with description hints.
+
+These conversions relax some constraints in the model's declaration. The tool server still
+validates the original schema. Messages and tool results pass through unchanged.
+
+## Tests
+
+After installing, run the offline regression tests from the repository:
+
+```bash
+~/.config/argon-codex/.venv/bin/python -m unittest discover -s tests -v
 ```
 
-`behavesAs` tells Claude Code which built-in model's client-side profile to use for the unknown
-ID. The error you get without it is
-`"gemini-4-argon" isn't described by this version's model catalog`.
+With the proxy running, exercise schema compatibility, a tool round trip and streaming.
+This sends three small, billed requests to Vertex AI:
 
-Second, a shell function so the normal `claude` command stays untouched. Append
-`claude/claude-argon.zsh` to `~/.zshrc`:
-
-```zsh
-claude-argon() {
-  ANTHROPIC_BASE_URL="http://127.0.0.1:4000" \
-  ANTHROPIC_AUTH_TOKEN="local-proxy" \
-  ANTHROPIC_MODEL="gemini-4-argon" \
-  ANTHROPIC_DEFAULT_SONNET_MODEL="gemini-4-argon" \
-  ANTHROPIC_DEFAULT_OPUS_MODEL="gemini-4-argon" \
-  ANTHROPIC_DEFAULT_HAIKU_MODEL="gemini-4-argon" \
-  ANTHROPIC_DEFAULT_FABLE_MODEL="gemini-4-argon" \
-  CLAUDE_CODE_SUBAGENT_MODEL="gemini-4-argon" \
-  DISABLE_PROMPT_CACHING=1 \
-  CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 \
-  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-  claude --model gemini-4-argon "$@"
-}
+```bash
+~/.config/argon-codex/.venv/bin/python tests/test_proxy.py
 ```
 
-- Every tier variable (Sonnet, Opus, Haiku, Fable) must point at the same model, otherwise
-  background calls go to a model name the proxy does not have.
-- **`DISABLE_PROMPT_CACHING=1`**: Claude Code marks prompts with `cache_control`; LiteLLM turns
-  that into a Gemini explicit-cache call (`:cachedContents`), which Argon does not support, and
-  the request 404s. `argon_hooks.py` now strips the markers on the proxy, so this variable is a
-  belt-and-braces setting rather than a requirement. Vertex **implicit** caching still applies
-  server-side: in our runs most input tokens came back as cache reads.
-- `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` strips beta headers that a proxy cannot honour.
-
-### 3.5 Claude desktop app
-
-Verified on macOS on 17 Oct 2026. The Windows path is in `docs/windows.md` and is untested.
-
-**Read this first.** The desktop app has its own connection setting, separate from the CLI's
-settings file, and it is **app-wide**: chat, Code tab and Cowork all go to the same place. The
-app is either on your Claude subscription or on the gateway for a whole launch, never both. In
-gateway mode it looks identical, which is why the only reliable checks are the model picker
-labels below and the proxy log.
-
-**How the app sees the proxy.** The app only keeps model IDs that look like Anthropic ones in
-its list (anything else is removed with "is not an Anthropic model for this provider"). That is
-why the proxy registers Argon under `claude-opus-4-8` and `claude-sonnet-4-6`, and why the
-configuration gives those entries a display name. The model itself will still call itself
-"Claude Opus 4.8" when asked: Claude Code's prompt tells it that name. It is Argon.
-
-**Option A, the screen.** Developer → Configure Third-Party Inference, then:
-
-| Field | Value |
-|---|---|
-| Connection | Gateway |
-| Credential kind | API key, any value (the proxy ignores it) |
-| Gateway base URL | `http://127.0.0.1:4000` |
-| Model discovery | off |
-| Model list | `claude-opus-4-8` with display name "Gemini 4 Argon (Vertex via proxy)" |
-| Disable Claude.ai sign-in | **on** (otherwise a sign-in chooser appears at launch and sends the app back to claude.ai) |
-
-**Option B, the files.** `./setup.sh --claude-desktop` (or by hand:
-`uv run --python 3.12 --no-project scripts/patch_claude_desktop.py claude/claude-desktop-entry.json --apply`)
-writes the same thing into the app's config library,
-`~/Library/Application Support/Claude-3p/configLibrary/`: a `_meta.json`
-(`{"appliedId": "<uuid>", "entries": [{"id": "<uuid>", "name": "..."}]}`) and one
-`<uuid>.json` per named configuration. The entry it writes is `claude/claude-desktop-entry.json`.
-It keeps your existing configuration (or creates an empty "Default" one) so you can always go
-back.
-
-Then **quit the app completely (Cmd-Q) and reopen it**; it reads the library only at launch.
-
-**Verify.** A new chat's model picker shows "Gemini 4 Argon (Vertex via proxy)". Every message
-appears as `POST /v1/messages` in `~/.config/litellm/argon.log`. The app's own log confirms the
-mode: `grep 'custom-3p' ~/Library/Logs/Claude-3p/main.log` shows "3P mode active { provider:
-'gateway' }" and "deploymentMode written { mode: '3p' }". The Code tab is covered automatically,
-because its default model name is one of the aliases.
-
-**Things that bite.**
-
-- Gateway mode runs on a separate app profile (`Claude-3p`), so your subscription chats and
-  sessions are hidden while it is active. They come back when you switch back.
-- In the Configure Third-Party Inference window, clicking another entry **applies it and
-  relaunches the app**. That is the switch; it is easy to trigger while looking around.
-- Chat features that rely on Anthropic server-side tools, such as web search, do not work on
-  Gemini.
-
-**Revert.** Either pick the other entry in Configure Third-Party Inference, or set `appliedId`
-in `_meta.json` back to it (the exact line is written to `REVERT-argon.txt` in that folder), then
-Cmd-Q and reopen.
-
----
+For a parallel trial alongside an existing proxy on port 4000, install with `--port 4001`.
+Both launchers read that saved port. `ARGON_PORT` can temporarily override it for one
+launch; apply the same override to both commands. The live test accepts
+`--base-url http://127.0.0.1:4001`.
 
 ## Troubleshooting
 
-Every one of these happened during the build. The fix is already in the files; this table is
-for when you deviate.
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `Publisher model ... locations/us-central1/... was not found` | Called the location-less express URL | Use `projects/<id>/locations/global/...` (the `api_base` in argon.yaml) |
-| `Thinking budget is not supported for this model. Use thinking level instead.` | Request carried `thinkingBudget` | Use `thinkingLevel` LOW/MEDIUM/HIGH; LiteLLM does this already |
-| Proxy: `Missing dependency No module named 'backoff'` | LiteLLM installed without `[proxy]` | `uv tool install 'litellm[proxy]' ...` |
-| Proxy: `No module named 'google'` on count_tokens | Google SDK missing | add `--with google-genai` |
-| Proxy refuses to start: `no master key is set` | Expected, we run keyless on localhost | `general_settings.dangerously_permit_weak_or_unset_master_key: true` |
-| Claude Code: `"gemini-4-argon" isn't described by this version's model catalog` | Unknown model ID | `modelPicker` row with `behavesAs` in settings.json |
-| Claude Code: 404 with `...gemini-4-argon:cachedContents` in proxy log, then 429s | `cache_control` → explicit cache (unsupported) → cooldown | `argon_hooks.py` strips the markers; `router_settings.disable_cooldowns: true`; `DISABLE_PROMPT_CACHING=1` as extra safety |
-| Claude Code: `There's an issue with the selected model` | Same as above, surfaced by the client | Same |
-| Claude Code `-p` says `Input must be provided either through stdin` | A list flag swallowed the prompt | Pipe the prompt on stdin, or put the prompt before flags |
-| Codex desktop: `Work browser access requires an authenticated account` / `Could not start this chat` | App treats a non-OpenAI provider as signed out | `requires_openai_auth = true` on the provider and a keyless proxy |
-| Codex: `provider auth cannot be combined with requires_openai_auth` (CLI), or desktop says config couldn't be loaded | Both `auth`/`env_key` and `requires_openai_auth` on one provider | Remove the `auth` block / `env_key` |
-| Codex desktop ignores the new model | Config read only at launch | Quit the ChatGPT app completely (Cmd-Q) and reopen |
-| Codex desktop model picker only shows "Custom" | Normal for custom providers | Nothing; the configured model is used |
-| Codex: MCP servers missing with the custom provider | Upstream Codex limitation | None yet (openai/codex issues 19363, 26977, 45396) |
-| `/v1/messages/count_tokens` 404, 500 (`No module named 'google'`) or `input_tokens: 0` | LiteLLM builds the Vertex countTokens URL wrongly and sends empty contents; the SDK is missing | `--with google-genai` on install; `argon_hooks.py` fixes the URL and builds contents from the messages |
-| Claude desktop: model list loses `gemini-4-argon` / "is not an Anthropic model for this provider" | The app only keeps Anthropic-looking IDs | Use the Claude-shaped aliases with a display name (`claude/claude-desktop-entry.json`) |
-| Claude desktop comes back on claude.ai after relaunch | Sign-in chooser at launch, or another entry was clicked in the third-party window (that applies it) | `disableDeploymentModeChooser: true` in the entry; do not click other entries unless you mean to switch |
-| Claude desktop still says it is "Claude Opus 4.8" | Alias name plus Claude Code's prompt | Expected; check the picker label and the proxy log instead |
-
-Logs: `~/.config/litellm/argon.log` (every request, with upstream errors), Codex desktop logs
-in `~/Library/Logs/com.openai.codex/`, Codex CLI sessions in `~/.codex/sessions/`.
-
----
-
-## Cost notes (read before you leave it running)
-
-- Argon list price on Vertex: **$2 / M input, $10 / M output until 30 Nov 2026, then $4 / $20**.
-  Thinking tokens are billed as output. The pricing footnote says the intro price is delivered as
-  **50 % credits back on net spend**, so if you pay with promotional credit, check the billing
-  report after day one before assuming the $2/$10 rate.
-- Non-global regions cost 10 % more. `global` is used here.
-- Implicit caching: cached input is $0.10 / M. Explicit caching is not supported on Argon.
-- Codex carries a big baseline context (its prompt, plugins, tool schemas). In our test a trivial
-  three-turn task used ~360k input tokens, a third from cache. Claude Code turns were ~110k
-  input tokens with most of it cached. Gemini CLI is far cheaper per turn than either.
-- Set a Google Cloud budget alert on the project before sharing this with anyone.
-
-## Security notes
-
-- The proxy listens on `127.0.0.1:4000` only and has no master key. Do not change `--host`.
-- Your Vertex key lives in `~/.config/litellm/vertex-api-key` with mode 600 and nowhere else.
-  Never paste it into chat tools or commit it. `.gitignore` here blocks the key files anyway.
-- Codex desktop sends your ChatGPT token to the proxy; it goes to localhost and is discarded.
-
-## Going back
-
-- Codex: delete the two top-level lines (`model`, `model_provider`) in `~/.codex/config.toml`
-  and relaunch the desktop app. Keep the provider block; it is inert.
-- Claude Code: just use `claude` instead of `claude-argon`. The `modelPicker` row is harmless.
-- Claude desktop: Developer → Configure Third-Party Inference → pick your other configuration,
-  or set `appliedId` in `~/Library/Application Support/Claude-3p/configLibrary/_meta.json` as
-  written in `REVERT-argon.txt` there, then Cmd-Q and reopen.
-- Proxy: `pkill -f argon.yaml`.
-- `setup.sh` leaves backups: `~/.codex/config.toml.bak-argon-<timestamp>` and
-  `~/.claude/settings.json.bak-argon-<timestamp>`.
-
-## FAQ
-
-### Why does Codex still need a ChatGPT login?
-Only because of the desktop app. `requires_openai_auth = true` is the switch that makes the app
-start threads on a custom provider, and that switch means Codex authenticates requests with your
-ChatGPT token. The token never leaves your machine. If you only want the **CLI** and have no
-ChatGPT account, see `docs/cli-only-variant.md`.
-
-### Can Codex or Claude Code call Vertex directly?
-No. Codex needs a Responses endpoint, Claude Code needs a Messages endpoint. Vertex has neither
-for Gemini. Claude Code's built-in "Vertex" option is for Claude models hosted on Vertex, not
-Gemini.
-
-### What about Gemini CLI and Antigravity?
-Gemini CLI can use Vertex natively (`GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`,
-`GOOGLE_CLOUD_LOCATION=global`, `GEMINI_MODEL=gemini-4-argon`, auth via
-`gcloud auth application-default login`), but its README states it is not optimised for Argon
-and we did not test it here. Antigravity has no bring-your-own-key or bring-your-own-endpoint
-support; Argon there comes with Google AI Pro/Ultra, not with Cloud credits.
-
-## Versions this was verified with
-
-| Tool | Version |
+| Error | Action |
 |---|---|
-| macOS | 26.2 (arm64) |
-| Codex CLI | 0.153.3 (standalone), 0.163.0-alpha bundled in ChatGPT.app 26.1013 |
-| Claude Code | 2.1.296 |
-| Claude desktop app | macOS build of 17 Oct 2026 (bundled Claude Code 2.1.299) |
-| LiteLLM | 1.105.1 (`litellm[proxy]` + google-genai 2.31.0, Python 3.12) |
-| uv | 0.12.13 |
-| Model | `gemini-4-argon`, GA on Vertex AI since 13 Oct 2026 |
+| `401` or expired credentials | Run `gcloud auth application-default login` again. Check whether `GOOGLE_APPLICATION_CREDENTIALS` overrides your ADC. |
+| `403` | Check the selected project's billing, Vertex AI API and account permissions. |
+| `404` for the model | Check model access; this setup uses the `global` endpoint. |
+| `429 Resource exhausted` | Retry later or inspect the project's quota/capacity. A running proxy cannot resolve an upstream capacity limit. |
+| `400` naming a tool schema | Check that the installed hook matches the repo, then restart the proxy. |
+| Port 4000 already in use | Reuse a verified compatible proxy, or install with `--port 4001`. |
+| Effort selector missing in T3 | Re-run `./setup.sh --t3`, refresh provider status, then restart the agent session. |
 
-## Repository layout
+## Files and removal
 
-```
-setup.sh                        one-shot installer, macOS/Linux (idempotent; --claude-desktop opt-in)
-setup.ps1                       one-shot installer, Windows PowerShell (idempotent; -ClaudeDesktop opt-in)
-AGENTS.md, CLAUDE.md            rules for AI agents that apply this setup (one tool at a time)
-scripts/patch_*.py              the config patching both installers share (run via uv, Python 3.12)
-proxy/argon.yaml.template       LiteLLM config: Argon plus Claude-shaped aliases (replace __PROJECT__)
-proxy/argon_hooks.py            proxy hooks: cache_control strip, count_tokens fixes
-proxy/start-argon.sh|.ps1       proxy start scripts
-codex/config-snippet.toml       lines for ~/.codex/config.toml
-claude/settings-snippet.json    modelPicker row for ~/.claude/settings.json
-claude/claude-argon.zsh|.ps1    shell functions for Claude Code
-claude/claude-desktop-entry.json the Claude desktop gateway configuration
-tests/test_proxy.py             end-to-end proxy check (stdlib only)
-docs/windows.md                 Windows differences, autostart, WSL, Claude desktop path
-docs/cli-only-variant.md        Codex CLI without a ChatGPT login (master-key variant)
-```
+`setup.sh --files-only` writes files without installing dependencies or starting anything.
+`ARGON_CONFIG_DIR` and `ARGON_BIN_DIR` can override the installation directories;
+`XDG_CONFIG_HOME` is respected for the default config directory.
+When using a custom `ARGON_CONFIG_DIR` with T3, set that variable in the instance's environment too.
+There are no embedded credentials, machine-specific paths or Google project IDs in the repo.
+To remove the installation, stop its proxy and remove `~/.config/argon-codex/` and
+`~/.local/bin/codex-argon`. Remove its T3 provider instance if you used `--t3`.
+To undo a later file update, restore its adjacent `.bak-*` copy.
 
-MIT licensed. Not affiliated with Google, OpenAI or Anthropic.
+Based on [Itsme23476/gemini-4-argon-coding-agents](https://github.com/Itsme23476/gemini-4-argon-coding-agents).
