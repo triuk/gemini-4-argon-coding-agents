@@ -67,8 +67,7 @@ three reasoning options, while its OpenAI instance and default model are preserv
 Start the installed proxy. In an agent session, use a detached process with output appended
 to `~/.config/argon-codex/argon.log`; do not leave it tied to a tool's timeout. Record its PID
 and confirm `/health/liveliness` returns HTTP 200. Never stop another process by a broad
-`pkill` pattern. For an explicit request to start at login, configure a user systemd service;
-otherwise show the restart command and explain that the manual process stops on reboot.
+`pkill` pattern. Complete verification before offering automatic startup in step 5.
 
 Run the offline tests from README.md, then `tests/test_proxy.py --base-url http://127.0.0.1:<port>`.
 That live check exercises the problematic tool schemas, a tool result and streaming, and
@@ -87,3 +86,26 @@ For 400 tool schema errors, inspect the installed hook and request shape before 
 Done: offline tests and live round trip pass, the actual Codex launcher replies `OK`, and
 T3 exposes the model and three effort values. If a check is blocked, state the exact
 remaining action instead of claiming the installation works.
+
+## 5. Ask about automatic startup
+
+After reporting the verification results, ask in the user's language:
+“Chceš, aby se proxy automaticky spouštěla po přihlášení do systému?”
+Make this the final setup question, not an extra requirement in the initial prompt.
+If the user has already explicitly accepted or declined automatic startup, use that choice.
+Wait for an answer before changing startup settings; silence leaves the manual setup intact.
+If verification is blocked, resolve that blocker before offering automatic startup.
+
+- **Yes:** configure a user systemd service for the installed `start-argon.sh`, using its
+  absolute path, `Restart=on-failure` and `WantedBy=default.target`. Preserve any required
+  ADC or custom environment overrides without copying credentials into the unit. Back up
+  an existing unit before changing it. Replace only the verified manual proxy process for
+  this installation, then run `systemctl --user daemon-reload` and enable/start the service.
+  Confirm that it is enabled and active and that the configured health endpoint responds.
+  Report the service name and commands for status, journal logs and `disable --now`.
+  This starts at user login; boot before login requires a separate explicit request.
+  If user systemd is unavailable, explain that limitation and agree on an alternative.
+- **No:** leave startup settings unchanged and show the installed proxy's restart command,
+  explaining that it must be run again after reboot.
+
+Done: the user's startup choice has been handled and the resulting behavior is explained.

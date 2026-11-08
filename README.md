@@ -21,6 +21,8 @@ Give an agent with terminal access to the target Linux computer this prompt:
 The shorter request “Nastav mi podle tohoto repa Argon: [link]” is enough when the agent
 can discover the existing T3 installation and Google project. The [agent setup procedure](docs/agent-setup.md)
 covers discovery, dependencies, ADC, installation, T3 models, startup and actual API checks.
+After verification, the agent asks whether to start the proxy automatically at login and
+configures it if you agree. Otherwise, it gives you the manual restart command.
 The agent may still need your project choice, browser sign-in, or owner-only billing/IAM
 action. It reports such blockers explicitly; cloning the repo alone does not grant access.
 
