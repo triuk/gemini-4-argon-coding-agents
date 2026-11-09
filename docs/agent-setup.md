@@ -16,23 +16,28 @@ when the user supplies only a link. Use the user's machine where Codex/T3 actual
 - If a dependency is missing, install it using its official installation instructions and
   the machine's package manager or a user-local install. Request elevated access only when
   the environment requires it; do not make the user perform agent-runnable steps.
-- Inspect the existing project file (`~/.config/argon-codex/vertex-project`, or legacy
-  `~/.config/litellm/argon-codex-project`), active gcloud project and ADC quota project.
-  Choose an unambiguous project; ask if no suitable project exists or candidates conflict.
-  Treat `GOOGLE_APPLICATION_CREDENTIALS` as an explicit ADC override. Never display tokens
-  or credential JSON, copy credentials into this repository, or ask for secrets in chat.
+- Never display tokens or credential JSON, copy credentials into this repository, or ask
+  for secrets in chat. Treat `GOOGLE_APPLICATION_CREDENTIALS` as an explicit ADC override.
 - Detect T3 from the running environment or its settings file. Read only relevant settings:
   active server settings path, existing Codex instance and its shared `homePath`. A remote
   T3 server needs files on that remote machine. Keep the normal OpenAI instance, login,
   global Codex config, other provider settings and current default model intact.
 
-Done: tools, project, target machine, T3 settings path and shared Codex home are known.
+Done: tools, target machine, T3 settings path and shared Codex home are known.
 
 ## 2. Prepare Google access
 
-Reuse valid Google Application Default Credentials. A normal `gcloud auth login` alone
-does not authorize the proxy. If needed, run the ADC login command from README.md and let
-the user complete browser sign-in. Continue after the command succeeds.
+Always run `gcloud auth login --update-adc`, even when an account or ADC already exists.
+Let the user complete Google browser sign-in and wait for the command to succeed before
+using the account or selecting a project. This signs in the CLI and updates ADC for the
+proxy. Do not assume existing credentials belong to the intended account. If
+`GOOGLE_APPLICATION_CREDENTIALS` is set, it overrides these ADC: identify that fact and
+resolve the intended credential source with the user before proceeding.
+
+Inspect accessible projects, the existing project file (`~/.config/argon-codex/vertex-project`,
+or legacy `~/.config/litellm/argon-codex-project`), active gcloud project and ADC quota
+project. Choose an unambiguous suitable project; ask if candidates conflict or no suitable
+project exists.
 
 Enable `aiplatform.googleapis.com` on the chosen project if missing and set its ADC quota
 project. If billing, model access or IAM permissions require the project owner, explain the
