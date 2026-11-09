@@ -10,6 +10,8 @@ exec codex \
   -m gemini-4-argon \
   -c 'model_provider="argon"' \
   -c 'model_reasoning_effort="low"' \
+  -c 'features.code_mode.enabled=true' \
+  -c 'features.code_mode_only=true' \
   -c 'model_providers.argon.name="Argon (Vertex ADC)"' \
   -c "model_providers.argon.base_url=\"http://127.0.0.1:$PORT/v1\"" \
   -c 'model_providers.argon.wire_api="responses"' \

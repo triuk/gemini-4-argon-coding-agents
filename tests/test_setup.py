@@ -10,6 +10,7 @@ import unittest
 REPO = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipIf(os.name == "nt", "POSIX installer; native Windows coverage is in test_windows_setup.py")
 class SetupTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="argon-setup-")
@@ -60,6 +61,8 @@ class SetupTests(unittest.TestCase):
         args = capture.read_text().splitlines()
         config = tomllib.loads("\n".join(args[i+1] for i, arg in enumerate(args) if arg == "-c"))
         self.assertEqual(config["model_provider"], "argon")
+        self.assertTrue(config["features"]["code_mode"]["enabled"])
+        self.assertTrue(config["features"]["code_mode_only"])
         self.assertEqual(config["model_providers"]["argon"]["base_url"], "http://127.0.0.1:4001/v1")
         self.assertEqual(config["model_providers"]["argon"]["wire_api"], "responses")
         self.assertEqual(args[-2:], ["exec", prompt])

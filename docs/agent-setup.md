@@ -7,12 +7,17 @@ when the user supplies only a link. Use the user's machine where Codex/T3 actual
 
 ## 1. Discover the existing setup
 
-- This procedure supports Linux, including a Linux environment inside WSL. On another OS,
-  report that limitation and ask which Linux environment to use before changing files.
+- This procedure supports Linux and native Windows. Use setup.sh on Linux and setup.ps1
+  on Windows. Use WSL only when the user's T3 agent actually runs inside that environment.
+  macOS is not covered; report that limitation before changing files there.
 - Find `uv`, `gcloud`, and `codex`, including executables outside the current PATH. Reuse
   working installations. T3 may manage its own Codex executable; its configured Binary path
   is evidence, not a fixed `~/.local/bin/codex` assumption. Ensure the `codex-argon` launcher
   can resolve the real `codex` executable in T3's environment as well as the terminal.
+  On Windows use `Get-Command`, the configured T3 Binary path, and user-local tool locations.
+  Resolve a real `codex.exe`, not a `.cmd` shim, and pass `-CodexBinary` when needed. Install
+  Google Cloud CLI using the official Windows installer or WinGet without `--scope user`.
+  The Windows setup bootstrap finds user-local uv even when the agent's PATH is stale.
 - If a dependency is missing, install it using its official installation instructions and
   the machine's package manager or a user-local install. Request elevated access only when
   the environment requires it; do not make the user perform agent-runnable steps.
@@ -54,6 +59,19 @@ For a nondefault shared Codex home, pass `--codex-home <absolute-path>`.
 If the default Argon instance ID is occupied by another provider, choose a new
 `--t3-instance <id>` rather than replacing it.
 
+On native Windows, use PowerShell instead:
+
+```powershell
+$env:VERTEX_PROJECT = '<chosen-project>'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -T3
+```
+
+The equivalent Windows options are `-T3Settings`, `-T3Instance`, `-CodexHome`, `-Port`,
+and `-FilesOnly`. `-CodexBinary <absolute-path-to-codex.exe>` records the real executable
+for T3's environment. Windows setup compiles a native `codex-argon.exe` with the local
+.NET Framework 4.x compiler and installs a `Scripts/python.exe` environment. It does not
+modify the global PowerShell execution policy or require a Linux shell.
+
 The installer merges the separate Argon instance, executable path, model and its
 Low/Medium/High reasoning choices. Existing settings are backed up. Use the installed
 launcher path in T3; a path into a temporary clone will break when the clone is removed.
@@ -61,8 +79,10 @@ launcher path in T3; a path into a temporary clone will break when the clone is 
 Check the intended proxy port before starting. Reuse an existing compatible Argon proxy
 only after confirming its config and schema hook. Leave an unknown listener alone; install
 with `--port <free-port>` to store a matching port for the new proxy and launcher.
-Keep the standard installation directories for T3. If the user requests a custom
-`ARGON_CONFIG_DIR`, also provide that environment variable to the T3 instance.
+Keep the standard installation directories for T3. On Linux, if the user requests a custom
+`ARGON_CONFIG_DIR`, also provide that environment variable to the T3 instance. The Windows
+native launcher embeds the installed runtime's location, so a custom config directory does
+not require that variable in T3 unless overriding the installed location.
 
 Done: proxy files and launcher are installed; T3 has the separate Argon model with all
 three reasoning options, while its OpenAI instance and default model are preserved.
@@ -74,10 +94,39 @@ to `~/.config/argon-codex/argon.log`; do not leave it tied to a tool's timeout. 
 and confirm `/health/liveliness` returns HTTP 200. Never stop another process by a broad
 `pkill` pattern. Complete verification before offering automatic startup in step 5.
 
+On Windows, start the installed proxy using:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.config\argon-codex\start-argon.ps1" -Background
+```
+
+Use the actual installation path if customized. This detaches the process, appends both
+output streams to `argon.log`, and records `argon.pid`. Allow LiteLLM to initialize before
+checking health. If replacing this installation, verify the PID and process tree before
+`taskkill /PID <verified-pid> /T /F`; leave every other listener alone.
+
 Run the offline tests from README.md, then `tests/test_proxy.py --base-url http://127.0.0.1:<port>`.
 That live check exercises the problematic tool schemas, a tool result and streaming, and
 sends three billed requests. Finally run the installed `codex-argon exec --ephemeral
 --skip-git-repo-check 'Reply with the single word OK. Do not use tools.'` and require `OK`.
+On Windows use `.venv/Scripts/python.exe` for the tests and the installed
+`~/.local/bin/codex-argon.exe` for the final check. Run the native Windows offline tests;
+the POSIX installer tests are intentionally selected only on Linux. Test a changed proxy
+installation on a separate free port before replacing a verified running one.
+
+For T3 also run `tests/test_app_server.py --launcher <installed-codex-argon-path>
+--base-url http://127.0.0.1:<port>` as documented in README.md. It uses the real Codex
+app-server, advertises 530 synthetic tools, calls the last one through Code Mode and
+requires a completed streamed reply containing its result. This is billed separately.
+A plain `OK` check alone cannot detect failures caused by a large T3 tool catalog.
+Keep the Code Mode overrides in the separate Argon launcher; never silently drop tools.
+The full Code Mode catalog must move to instructions when its description exceeds the
+proxy's conservative description budget. Exercise the actual LiteLLM proxy hook route `aresponses`.
+
+On Windows confirm background startup has no visible console for the proxy or its
+interpreter descendants. The runtime must use `pythonw.exe` with `CREATE_NO_WINDOW`;
+detaching `litellm.exe` alone can still open a console in its child process. Foreground
+startup deliberately retains terminal output.
 
 For T3, confirm the instance has `gemini-4-argon` with `reasoningEffort` choices
 `low`, `medium`, `high`; refresh provider status if needed. Tell the user where to select
@@ -101,7 +150,7 @@ If the user has already explicitly accepted or declined automatic startup, use t
 Wait for an answer before changing startup settings; silence leaves the manual setup intact.
 If verification is blocked, resolve that blocker before offering automatic startup.
 
-- **Yes:** configure a user systemd service for the installed `start-argon.sh`, using its
+- **Yes, on Linux:** configure a user systemd service for the installed `start-argon.sh`, using its
   absolute path, `Restart=on-failure` and `WantedBy=default.target`. Preserve any required
   ADC or custom environment overrides without copying credentials into the unit. Back up
   an existing unit before changing it. Replace only the verified manual proxy process for
@@ -110,6 +159,16 @@ If verification is blocked, resolve that blocker before offering automatic start
   Report the service name and commands for status, journal logs and `disable --now`.
   This starts at user login; boot before login requires a separate explicit request.
   If user systemd is unavailable, explain that limitation and agree on an alternative.
+- **Yes, on Windows:** create a per-user startup entry in the current user's Startup folder
+  (`[Environment]::GetFolderPath('Startup')`) that invokes the installed `start-argon.ps1
+  -Background` at login. Use a hidden launcher, for example a small WScript `.vbs` entry
+  calling PowerShell with `-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File`
+  and the quoted absolute script path. Back up an existing entry before changing it.
+  Preserve required user environment overrides without embedding credentials. Test the
+  entry by replacing only this installation's verified proxy process, then confirm the
+  saved PID, health endpoint and log. Report the entry's path and how to remove it. This
+  starts at login; it does not monitor crashes or start before login. Do not use systemd
+  or register an administrator/system-wide service on Windows.
 - **No:** leave startup settings unchanged and show the installed proxy's restart command,
   explaining that it must be run again after reboot.
 

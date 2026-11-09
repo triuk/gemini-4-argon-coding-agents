@@ -34,10 +34,10 @@ def merged_settings(settings, instance_id, launcher, codex_home=None):
     models = config.setdefault("customModels", [])
     if not isinstance(models, list):
         raise ValueError("customModels must be an array.")
-    model = json.loads(MODEL_FILE.read_text())
+    model = json.loads(MODEL_FILE.read_text(encoding="utf-8"))
     matching = [i for i, item in enumerate(models)
                 if item == model["slug"] or isinstance(item, dict) and item.get("slug") == model["slug"]]
-    if existed and not matching and Path(config.get("binaryPath", "")).name != "codex-argon":
+    if existed and not matching and Path(config.get("binaryPath", "")).name not in ("codex-argon", "codex-argon.exe"):
         raise ValueError("Existing Codex instance is not recognized as Argon; choose another --instance.")
     if len(matching) > 1:
         raise ValueError("Duplicate Argon models; remove duplicates before retrying.")
@@ -68,7 +68,7 @@ def configure(settings_path, instance_id, launcher, codex_home=None, check=False
     if check:
         return
     if not launcher.is_file() or not os.access(launcher, os.X_OK):
-        raise ValueError("Launcher is missing or not executable; run setup.sh first.")
+        raise ValueError("Launcher is missing or not executable; run setup.sh or setup.ps1 first.")
     if result == settings:
         print(f"T3 already configured: {instance_id}")
         return
@@ -85,7 +85,7 @@ def configure(settings_path, instance_id, launcher, codex_home=None, check=False
         print(f"Backup: {backup}")
     fd, temp = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     try:
-        with os.fdopen(fd, "w") as output:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
             json.dump(result, output, ensure_ascii=False, indent=2)
             output.write("\n")
         os.chmod(temp, mode)

@@ -7,6 +7,7 @@ import unittest
 
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 from litellm.llms.vertex_ai.common_utils import build_vertex_schema
+from litellm.responses.litellm_completion_transformation.custom_tools import convert_custom_tool_to_function_tool
 
 
 spec = importlib.util.spec_from_file_location(
@@ -90,6 +91,32 @@ class SchemaTests(unittest.TestCase):
         self.assertIsNot(result["tools"], tools)
         self.assertEqual(result["input"], before["input"])
         self.assertEqual(result["instructions"], "keep")
+
+    def test_large_code_mode_catalog_is_preserved_in_instructions(self):
+        catalog = '\n'.join(f'tools.fixture_{number}(text: string): Promise<string>;' for number in range(600))
+        tools = [{"type": "custom", "name": "exec", "description": catalog}]
+        data = {"tools": tools, "instructions": "existing instructions", "input": [{"role": "user", "content": "keep"}]}
+        before = deepcopy(data)
+        result = asyncio.run(hooks.proxy_handler_instance.async_pre_call_hook(None, None, data, "aresponses"))
+        self.assertLessEqual(len(result['tools'][0]['description'].encode('utf-8')), hooks.DESCRIPTION_BUDGET)
+        bridged = convert_custom_tool_to_function_tool(result['tools'][0])
+        self.assertLessEqual(len(bridged['function']['description'].encode('utf-8')), hooks.DESCRIPTION_BUDGET)
+        self.assertIn(catalog, result['instructions'])
+        self.assertTrue(result['instructions'].startswith('existing instructions'))
+        self.assertEqual(tools, before['tools'])
+        self.assertEqual(result['input'], before['input'])
+        again = asyncio.run(hooks.proxy_handler_instance.async_pre_call_hook(None, None, result, "responses"))
+        self.assertEqual(again['instructions'].count(catalog), 1)
+
+    def test_nested_tool_guidance_keeps_names_and_unicode_without_truncation(self):
+        description = '\u017e' * 800  # UTF-8 byte budget, not just ASCII character count.
+        data = {"tools": [{"type": "namespace", "name": "fixture", "tools": [
+            {"type": "function", "name": "echo", "description": description,
+             "parameters": {"type": "object", "properties": {}}}]}]}
+        result = asyncio.run(hooks.proxy_handler_instance.async_pre_call_hook(None, None, data, "responses"))
+        self.assertIn('## Tool fixture.echo\n\n' + description, result['instructions'])
+        converted = build_vertex_schema(result['tools'][0]['tools'][0]['parameters'])
+        self.assertEqual(converted['type'], 'object')
 
 
 if __name__ == "__main__":

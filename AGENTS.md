@@ -1,6 +1,6 @@
 # Scope
 
-This fork targets Codex CLI and T3 Code on Linux using Vertex AI ADC.
+This fork targets Codex CLI and T3 Code on Linux and native Windows using Vertex AI ADC.
 
 ## Install from a repository link
 
@@ -13,6 +13,8 @@ user must perform, such as Google browser sign-in; keep working on independent s
 
 Read README.md before changing installation behavior. Keep the default Codex config and other
 agents' settings intact; provider overrides belong in the separate codex-argon launcher.
+Use setup.sh on Linux and setup.ps1 on Windows. Keep credentials and generated binaries
+out of Git. Windows launchers must preserve app-server stdio, arguments and exit codes.
 
 # Verification
 

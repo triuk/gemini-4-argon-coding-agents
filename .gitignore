@@ -10,3 +10,6 @@ argon-master-key
 application_default_credentials.json
 vertex-project
 proxy-port
+codex-binary
+argon.pid
+*.exe
