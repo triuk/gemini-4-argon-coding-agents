@@ -182,7 +182,8 @@ class Capture {
         argon = updated["providerInstances"]["codex_argon_proxy"]
         self.assertEqual(argon["displayName"], "M\u016fj Argon")
         self.assertEqual(argon["config"]["homePath"], str(self.root / "shared"))
-        self.assertEqual(argon["config"]["binaryPath"], str(self.launcher))
+        # configure_t3 resolves paths, including Windows 8.3 aliases such as RUNNER~1.
+        self.assertEqual(argon["config"]["binaryPath"], str(self.launcher.resolve()))
         self.assertIn("another-model", argon["config"]["customModels"])
         effort = argon["config"]["customModels"][-1]["capabilities"]["optionDescriptors"][0]
         self.assertEqual(effort["id"], "reasoningEffort")
@@ -198,7 +199,7 @@ class Capture {
         result = self.setup("--t3", "--t3-instance", "my_argon", "--codex-home", str(home), T3CODE_HOME=str(self.root / "t3"))
         self.assertEqual(result.returncode, 0, result.stderr)
         settings = json.loads((self.root / "t3/userdata/settings.json").read_text(encoding="utf-8"))
-        self.assertEqual(settings["providerInstances"]["my_argon"]["config"]["homePath"], str(home))
+        self.assertEqual(settings["providerInstances"]["my_argon"]["config"]["homePath"], str(home.resolve()))
 
     def test_t3_refuses_conflicts_before_installation(self):
         for instance in ({"driver": "claudeAgent"}, {"driver": "codex", "config": {"setupMode": "managed"}},
